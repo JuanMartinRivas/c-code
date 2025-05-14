@@ -1,9 +1,14 @@
+/*** includes ***/
+
 #include <stdio.h>
 #include <errno.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <termios.h>
 #include <unistd.h>
+
+/*** defines ***/
+#define CTRL_KEY(k) ((k) & 0x1f)
 
 /*** data ***/
 
@@ -60,7 +65,7 @@ int main()
         {
             printf("%d ('%c')\r\n", c, c);
         }
-        if (c == 'q')
+        if (c == CTRL_KEY('q'))
             break;
     }
     return 0;
