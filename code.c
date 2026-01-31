@@ -94,6 +94,7 @@ struct editorConfig
     time_t statusmsg_time;
     struct editorSyntax *syntax;
     struct termios orig_termios;
+    int show_line_numbers;
 };
 
 struct editorConfig E;
@@ -887,6 +888,22 @@ void abFree(struct abuf *ab)
 
 /*** output ***/
 
+int editorGetLineNumWidth()
+{
+    if (!E.show_line_numbers)
+        return 0;
+    
+    int num_digits = 1;
+    int temp = E.numrows;
+    while (temp >= 10)
+    {
+        temp /= 10;
+        num_digits++;
+    }
+    if (num_digits < 3) num_digits = 3; // Minimum width of 3
+    return num_digits + 2; // digits + " │ "
+}
+
 void editorScroll()
 {
     E.rx = 0;
@@ -919,6 +936,33 @@ void editorDrawRows(struct abuf *ab)
     for (y = 0; y < E.screenrows; y++)
     {
         int filerow = y + E.rowoff;
+        
+        // Calculate line number width and render line numbers
+        int line_num_width = editorGetLineNumWidth();
+        if (E.show_line_numbers)
+        {
+            int num_digits = line_num_width - 3; // Remove the " │ " part
+            
+            if (filerow >= E.numrows)
+            {
+                // Empty line - show just spaces and separator
+                char line_num[32];
+                int len = snprintf(line_num, sizeof(line_num), "%*s │ ", num_digits, "");
+                abAppend(ab, "\x1b[38;5;240m", 11); // Dark gray color
+                abAppend(ab, line_num, len);
+                abAppend(ab, "\x1b[39m", 5);
+            }
+            else
+            {
+                // Show line number
+                char line_num[32];
+                int len = snprintf(line_num, sizeof(line_num), "%*d │ ", num_digits, filerow + 1);
+                abAppend(ab, "\x1b[38;5;240m", 11); // Dark gray color
+                abAppend(ab, line_num, len);
+                abAppend(ab, "\x1b[39m", 5);
+            }
+        }
+        
         if (filerow >= E.numrows)
         {
             if (E.numrows == 0 && y == E.screenrows / 3)
@@ -926,9 +970,10 @@ void editorDrawRows(struct abuf *ab)
                 char welcome[80];
                 int welcomelen = snprintf(welcome, sizeof(welcome),
                                           "Kilo editor -- version %s", KILO_VERSION);
-                if (welcomelen > E.screencols)
-                    welcomelen = E.screencols;
-                int padding = (E.screencols - welcomelen) / 2;
+                int available_cols = E.screencols - line_num_width;
+                if (welcomelen > available_cols)
+                    welcomelen = available_cols;
+                int padding = (available_cols - welcomelen) / 2;
                 if (padding)
                 {
                     abAppend(ab, "~", 1);
@@ -948,8 +993,9 @@ void editorDrawRows(struct abuf *ab)
             int len = E.row[filerow].rsize - E.coloff;
             if (len < 0)
                 len = 0;
-            if (len > E.screencols)
-                len = E.screencols;
+            int available_cols = E.screencols - line_num_width;
+            if (len > available_cols)
+                len = available_cols;
             char *c = &E.row[filerow].render[E.coloff];
             unsigned char *hl = &E.row[filerow].hl[E.coloff];
             int current_color = -1;
@@ -1006,8 +1052,10 @@ void editorDrawStatusBar(struct abuf *ab)
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
                        E.filename ? E.filename : "[No Name]", E.numrows,
                        E.dirty ? "(modified)" : "");
-    int rlen = snprintf(rstatus, sizeof(rstatus), "%s | %d/%d",
-                        E.syntax ? E.syntax->filetype : "no ft", E.cy + 1, E.numrows);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%s%s | %d/%d",
+                        E.syntax ? E.syntax->filetype : "no ft",
+                        E.show_line_numbers ? " [LN]" : "",
+                        E.cy + 1, E.numrows);
     if (len > E.screencols)
         len = E.screencols;
     abAppend(ab, status, len);
@@ -1052,8 +1100,9 @@ void editorRefreshScreen()
     editorDrawMessageBar(&ab);
 
     char buf[32];
+    int line_num_width = editorGetLineNumWidth();
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1,
-             (E.rx - E.coloff) + 1);
+             (E.rx - E.coloff) + line_num_width + 1);
     abAppend(&ab, buf, strlen(buf));
 
     abAppend(&ab, "\x1b[?25h", 6);
@@ -1219,6 +1268,11 @@ void editorProcessKeypress()
         editorFind();
         break;
 
+    case CTRL_KEY('l'):
+        E.show_line_numbers = !E.show_line_numbers;
+        editorSetStatusMessage("Line numbers %s", E.show_line_numbers ? "ON" : "OFF");
+        break;
+
     case BACKSPACE:
     case CTRL_KEY('h'):
     case DEL_KEY:
@@ -1254,7 +1308,6 @@ void editorProcessKeypress()
         editorMoveCursor(c);
         break;
 
-    case CTRL_KEY('l'):
     case '\x1b':
         break;
 
@@ -1282,6 +1335,7 @@ void initEditor()
     E.statusmsg[0] = '\0';
     E.statusmsg_time = 0;
     E.syntax = NULL;
+    E.show_line_numbers = 1;
 
     if (getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
