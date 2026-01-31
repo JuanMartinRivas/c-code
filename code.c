@@ -113,6 +113,7 @@ struct editorConfig
         int len;
         int is_line;
     } clipboard;
+    int auto_indent;
 };
 
 struct editorConfig E;
@@ -999,6 +1000,53 @@ void editorInsertChar(int c)
 
 void editorInsertNewline()
 {
+    int indent = 0;
+    int extra_indent = 0;
+    char indent_chars[256];
+    indent_chars[0] = '\0';
+    
+    // Calculate indentation if auto-indent is enabled
+    if (E.auto_indent && E.cy < E.numrows)
+    {
+        erow *row = &E.row[E.cy];
+        
+        // Count leading whitespace on current line
+        int i;
+        for (i = 0; i < row->size && (row->chars[i] == ' ' || row->chars[i] == '\t'); i++)
+        {
+            if (indent < 255)
+            {
+                indent_chars[indent++] = row->chars[i];
+            }
+        }
+        indent_chars[indent] = '\0';
+        
+        // Check if current line ends with opening brace or colon
+        if (E.cx > 0)
+        {
+            char prev_char = row->chars[E.cx - 1];
+            if (prev_char == '{' || prev_char == ':')
+            {
+                extra_indent = 1;
+            }
+        }
+        else if (row->size > 0)
+        {
+            // Check last non-whitespace character
+            for (int j = row->size - 1; j >= 0; j--)
+            {
+                if (row->chars[j] != ' ' && row->chars[j] != '\t')
+                {
+                    if (row->chars[j] == '{' || row->chars[j] == ':')
+                    {
+                        extra_indent = 1;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    
     if (E.cx == 0)
     {
         editorPushUndo(U_INSERT_LINE, E.cy, 0, NULL, 0);
@@ -1023,6 +1071,28 @@ void editorInsertNewline()
     }
     E.cy++;
     E.cx = 0;
+    
+    // Apply indentation to the new line
+    if (E.auto_indent && indent > 0)
+    {
+        erow *new_row = &E.row[E.cy];
+        
+        // Insert the base indentation
+        for (int i = 0; i < indent; i++)
+        {
+            editorRowInsertChar(new_row, E.cx++, indent_chars[i]);
+        }
+        
+        // Add extra indentation after { or :
+        if (extra_indent)
+        {
+            // Use 4 spaces for extra indent (could be made configurable)
+            for (int i = 0; i < 4; i++)
+            {
+                editorRowInsertChar(new_row, E.cx++, ' ');
+            }
+        }
+    }
 }
 
 void editorDelChar()
@@ -1656,6 +1726,11 @@ void editorProcessKeypress()
         editorSetStatusMessage("Line numbers %s", E.show_line_numbers ? "ON" : "OFF");
         break;
 
+    case CTRL_KEY('i'):
+        E.auto_indent = !E.auto_indent;
+        editorSetStatusMessage("Auto-indent %s", E.auto_indent ? "ON" : "OFF");
+        break;
+
     case CTRL_KEY('z'):
         editorUndo();
         break;
@@ -1759,6 +1834,7 @@ void initEditor()
     E.clipboard.text = NULL;
     E.clipboard.len = 0;
     E.clipboard.is_line = 0;
+    E.auto_indent = 1;
 
     if (getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
@@ -1775,7 +1851,7 @@ int main(int argc, char *argv[])
     }
 
     editorSetStatusMessage(
-        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-C/X/P = copy/cut/paste");
+        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-I = auto-indent");
 
     while (1)
     {
