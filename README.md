@@ -163,7 +163,7 @@ c-code/
 
 ## Contributing
 
-This project welcomes contributions! See [build/tasks.md](build/tasks.md) for a comprehensive list of planned features and improvements.
+This project welcomes contributions!
 
 ## License
 
