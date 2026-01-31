@@ -41,6 +41,7 @@ C-code is a minimal text editor that operates entirely in raw terminal mode, off
 - **Message bar**: Context-sensitive messages with 5-second timeout
 - **Position indicator**: Current line and total lines displayed
 - **Welcome screen**: Version information on startup
+- **Line numbers**: Toggleable line numbers in left margin (Ctrl-L to toggle)
 
 ## Installation
 
@@ -86,6 +87,7 @@ gcc code.c -o code.exe -Wall -Wextra -pedantic -std=c99
 | **Ctrl-S** | Save file |
 | **Ctrl-Q** | Quit (prompts if unsaved changes) |
 | **Ctrl-F** | Find/Search |
+| **Ctrl-L** | Toggle line numbers on/off |
 | **Arrow Keys** | Move cursor |
 | **Page Up/Down** | Scroll by page |
 | **Home** | Jump to start of line |
