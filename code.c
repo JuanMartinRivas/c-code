@@ -78,6 +78,16 @@ typedef struct erow
     int hl_open_comment;
 } erow;
 
+typedef struct undoState
+{
+    enum { U_INSERT_CHAR, U_DELETE_CHAR, U_INSERT_LINE, U_DELETE_LINE } type;
+    int row, col;
+    char *data;
+    int data_len;
+    struct undoState *prev;
+    struct undoState *next;
+} undoState;
+
 struct editorConfig
 {
     int cx, cy;
@@ -95,6 +105,9 @@ struct editorConfig
     struct editorSyntax *syntax;
     struct termios orig_termios;
     int show_line_numbers;
+    undoState *undo_stack;
+    undoState *redo_stack;
+    int undo_count;
 };
 
 struct editorConfig E;
@@ -124,6 +137,9 @@ struct editorSyntax HLDB[] = {
 void editorSetStatusMessage(const char *fmt, ...);
 void editorRefreshScreen();
 char *editorPrompt(char *prompt, void (*callback)(char *, int));
+void editorPushUndo(int type, int row, int col, char *data, int data_len);
+void editorUndo();
+void editorRedo();
 
 /*** terminal ***/
 
@@ -631,6 +647,207 @@ void editorRowDelChar(erow *row, int at)
     E.dirty++;
 }
 
+/*** undo/redo ***/
+
+void editorFreeUndoStack(undoState **stack)
+{
+    while (*stack)
+    {
+        undoState *temp = *stack;
+        *stack = (*stack)->next;
+        free(temp->data);
+        free(temp);
+    }
+}
+
+void editorPushUndo(int type, int row, int col, char *data, int data_len)
+{
+    undoState *state = malloc(sizeof(undoState));
+    if (!state) return;
+    
+    state->type = type;
+    state->row = row;
+    state->col = col;
+    state->data = data;
+    state->data_len = data_len;
+    state->prev = NULL;
+    state->next = E.undo_stack;
+    
+    if (E.undo_stack)
+        E.undo_stack->prev = state;
+    E.undo_stack = state;
+    E.undo_count++;
+    
+    // Clear redo stack when new action is performed
+    editorFreeUndoStack(&E.redo_stack);
+    
+    // Limit undo stack to 1000 operations
+    if (E.undo_count > 1000)
+    {
+        undoState *last = E.undo_stack;
+        while (last->next && last->next->next)
+            last = last->next;
+        if (last->next)
+        {
+            free(last->next->data);
+            free(last->next);
+            last->next = NULL;
+            E.undo_count--;
+        }
+    }
+}
+
+void editorUndo()
+{
+    if (!E.undo_stack)
+    {
+        editorSetStatusMessage("Nothing to undo");
+        return;
+    }
+    
+    undoState *state = E.undo_stack;
+    E.undo_stack = state->next;
+    if (E.undo_stack)
+        E.undo_stack->prev = NULL;
+    E.undo_count--;
+    
+    // Move to redo stack
+    state->next = E.redo_stack;
+    state->prev = NULL;
+    if (E.redo_stack)
+        E.redo_stack->prev = state;
+    E.redo_stack = state;
+    
+    // Apply undo
+    switch (state->type)
+    {
+    case U_INSERT_CHAR:
+        E.cy = state->row;
+        E.cx = state->col;
+        if (E.cy < E.numrows && E.cx > 0)
+        {
+            editorRowDelChar(&E.row[E.cy], E.cx - 1);
+            E.cx--;
+            E.dirty++;
+        }
+        break;
+        
+    case U_DELETE_CHAR:
+        E.cy = state->row;
+        E.cx = state->col;
+        if (E.cy < E.numrows && state->data)
+        {
+            editorRowInsertChar(&E.row[E.cy], E.cx, state->data[0]);
+            E.dirty++;
+        }
+        break;
+        
+    case U_INSERT_LINE:
+        E.cy = state->row;
+        if (E.cy < E.numrows)
+        {
+            if (E.cy < E.numrows - 1)
+            {
+                erow *row = &E.row[E.cy];
+                erow *next_row = &E.row[E.cy + 1];
+                // Merge lines back
+                E.cx = row->size;
+                editorRowAppendString(row, next_row->chars, next_row->size);
+                editorDelRow(E.cy + 1);
+                E.dirty++;
+            }
+        }
+        break;
+        
+    case U_DELETE_LINE:
+        E.cy = state->row;
+        E.cx = state->col;
+        if (state->data)
+        {
+            editorInsertRow(E.cy, state->data, state->data_len);
+            E.dirty++;
+        }
+        break;
+    }
+    
+    editorSetStatusMessage("Undo");
+}
+
+void editorRedo()
+{
+    if (!E.redo_stack)
+    {
+        editorSetStatusMessage("Nothing to redo");
+        return;
+    }
+    
+    undoState *state = E.redo_stack;
+    E.redo_stack = state->next;
+    if (E.redo_stack)
+        E.redo_stack->prev = NULL;
+    
+    // Move back to undo stack
+    state->next = E.undo_stack;
+    state->prev = NULL;
+    if (E.undo_stack)
+        E.undo_stack->prev = state;
+    E.undo_stack = state;
+    E.undo_count++;
+    
+    // Apply redo
+    switch (state->type)
+    {
+    case U_INSERT_CHAR:
+        E.cy = state->row;
+        E.cx = state->col;
+        if (E.cy < E.numrows && state->data)
+        {
+            editorRowInsertChar(&E.row[E.cy], E.cx, state->data[0]);
+            E.cx++;
+            E.dirty++;
+        }
+        break;
+        
+    case U_DELETE_CHAR:
+        E.cy = state->row;
+        E.cx = state->col;
+        if (E.cy < E.numrows && E.cx > 0)
+        {
+            editorRowDelChar(&E.row[E.cy], E.cx - 1);
+            E.cx--;
+            E.dirty++;
+        }
+        break;
+        
+    case U_INSERT_LINE:
+        E.cy = state->row;
+        E.cx = 0;
+        if (E.cy <= E.numrows)
+        {
+            if (state->data)
+                editorInsertRow(E.cy + 1, state->data, state->data_len);
+            else
+                editorInsertRow(E.cy + 1, "", 0);
+            E.cy++;
+            E.dirty++;
+        }
+        break;
+        
+    case U_DELETE_LINE:
+        E.cy = state->row;
+        if (E.cy < E.numrows)
+        {
+            editorDelRow(E.cy);
+            if (E.cy >= E.numrows && E.cy > 0)
+                E.cy--;
+            E.dirty++;
+        }
+        break;
+    }
+    
+    editorSetStatusMessage("Redo");
+}
+
 /*** editor operations ***/
 
 void editorInsertChar(int c)
@@ -639,6 +856,16 @@ void editorInsertChar(int c)
     {
         editorInsertRow(E.numrows, "", 0);
     }
+    
+    // Save undo state
+    char *char_data = malloc(2);
+    if (char_data)
+    {
+        char_data[0] = c;
+        char_data[1] = '\0';
+        editorPushUndo(U_INSERT_CHAR, E.cy, E.cx, char_data, 1);
+    }
+    
     editorRowInsertChar(&E.row[E.cy], E.cx, c);
     E.cx++;
 }
@@ -647,11 +874,20 @@ void editorInsertNewline()
 {
     if (E.cx == 0)
     {
+        editorPushUndo(U_INSERT_LINE, E.cy, 0, NULL, 0);
         editorInsertRow(E.cy, "", 0);
     }
     else
     {
         erow *row = &E.row[E.cy];
+        // Save the text that will be moved to the new line
+        char *moved_text = malloc(row->size - E.cx + 1);
+        if (moved_text)
+        {
+            memcpy(moved_text, &row->chars[E.cx], row->size - E.cx);
+            moved_text[row->size - E.cx] = '\0';
+            editorPushUndo(U_INSERT_LINE, E.cy, E.cx, moved_text, row->size - E.cx);
+        }
         editorInsertRow(E.cy + 1, &row->chars[E.cx], row->size - E.cx);
         row = &E.row[E.cy];
         row->size = E.cx;
@@ -672,11 +908,28 @@ void editorDelChar()
     erow *row = &E.row[E.cy];
     if (E.cx > 0)
     {
+        // Save deleted character
+        char *char_data = malloc(2);
+        if (char_data)
+        {
+            char_data[0] = row->chars[E.cx - 1];
+            char_data[1] = '\0';
+            editorPushUndo(U_DELETE_CHAR, E.cy, E.cx - 1, char_data, 1);
+        }
         editorRowDelChar(row, E.cx - 1);
         E.cx--;
     }
     else
     {
+        // Save deleted line (merging lines)
+        erow *prev_row = &E.row[E.cy - 1];
+        char *line_data = malloc(row->size + 1);
+        if (line_data)
+        {
+            memcpy(line_data, row->chars, row->size);
+            line_data[row->size] = '\0';
+            editorPushUndo(U_DELETE_LINE, E.cy, prev_row->size, line_data, row->size);
+        }
         E.cx = E.row[E.cy - 1].size;
         editorRowAppendString(&E.row[E.cy - 1], row->chars, row->size);
         editorDelRow(E.cy);
@@ -1273,6 +1526,14 @@ void editorProcessKeypress()
         editorSetStatusMessage("Line numbers %s", E.show_line_numbers ? "ON" : "OFF");
         break;
 
+    case CTRL_KEY('z'):
+        editorUndo();
+        break;
+
+    case CTRL_KEY('y'):
+        editorRedo();
+        break;
+
     case BACKSPACE:
     case CTRL_KEY('h'):
     case DEL_KEY:
@@ -1336,6 +1597,9 @@ void initEditor()
     E.statusmsg_time = 0;
     E.syntax = NULL;
     E.show_line_numbers = 1;
+    E.undo_stack = NULL;
+    E.redo_stack = NULL;
+    E.undo_count = 0;
 
     if (getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
@@ -1352,7 +1616,7 @@ int main(int argc, char *argv[])
     }
 
     editorSetStatusMessage(
-        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
+        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-Z = undo | Ctrl-Y = redo");
 
     while (1)
     {
