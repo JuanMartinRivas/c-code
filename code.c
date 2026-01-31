@@ -108,6 +108,11 @@ struct editorConfig
     undoState *undo_stack;
     undoState *redo_stack;
     int undo_count;
+    struct {
+        char *text;
+        int len;
+        int is_line;
+    } clipboard;
 };
 
 struct editorConfig E;
@@ -140,6 +145,10 @@ char *editorPrompt(char *prompt, void (*callback)(char *, int));
 void editorPushUndo(int type, int row, int col, char *data, int data_len);
 void editorUndo();
 void editorRedo();
+void editorCopy();
+void editorCut();
+void editorPaste();
+void editorInsertChar(int c);
 
 /*** terminal ***/
 
@@ -848,6 +857,124 @@ void editorRedo()
     editorSetStatusMessage("Redo");
 }
 
+/*** copy/cut/paste ***/
+
+void editorCopy()
+{
+    if (E.cy >= E.numrows)
+    {
+        editorSetStatusMessage("Nothing to copy");
+        return;
+    }
+    
+    // Free old clipboard data
+    free(E.clipboard.text);
+    
+    // Copy current line
+    erow *row = &E.row[E.cy];
+    E.clipboard.len = row->size;
+    E.clipboard.text = malloc(E.clipboard.len + 1);
+    if (E.clipboard.text)
+    {
+        memcpy(E.clipboard.text, row->chars, row->size);
+        E.clipboard.text[E.clipboard.len] = '\0';
+        E.clipboard.is_line = 1;
+        editorSetStatusMessage("Copied line %d (%d chars)", E.cy + 1, E.clipboard.len);
+    }
+    else
+    {
+        E.clipboard.len = 0;
+        editorSetStatusMessage("Copy failed: out of memory");
+    }
+}
+
+void editorCut()
+{
+    if (E.cy >= E.numrows)
+    {
+        editorSetStatusMessage("Nothing to cut");
+        return;
+    }
+    
+    // Copy the line first
+    erow *row = &E.row[E.cy];
+    free(E.clipboard.text);
+    E.clipboard.len = row->size;
+    E.clipboard.text = malloc(E.clipboard.len + 1);
+    if (!E.clipboard.text)
+    {
+        E.clipboard.len = 0;
+        editorSetStatusMessage("Cut failed: out of memory");
+        return;
+    }
+    memcpy(E.clipboard.text, row->chars, row->size);
+    E.clipboard.text[E.clipboard.len] = '\0';
+    E.clipboard.is_line = 1;
+    
+    // Save undo state
+    char *line_data = malloc(row->size + 1);
+    if (line_data)
+    {
+        memcpy(line_data, row->chars, row->size);
+        line_data[row->size] = '\0';
+        editorPushUndo(U_DELETE_LINE, E.cy, E.cx, line_data, row->size);
+    }
+    
+    // Delete the line
+    editorDelRow(E.cy);
+    if (E.cy >= E.numrows && E.cy > 0)
+        E.cy--;
+    if (E.cy < E.numrows)
+        E.cx = 0;
+    
+    editorSetStatusMessage("Cut line %d", E.cy + 1);
+}
+
+void editorPaste()
+{
+    if (!E.clipboard.text || E.clipboard.len == 0)
+    {
+        editorSetStatusMessage("Clipboard is empty");
+        return;
+    }
+    
+    if (E.clipboard.is_line)
+    {
+        // Paste as a new line after current line
+        int paste_row = E.cy;
+        if (E.cy >= E.numrows)
+            paste_row = E.numrows;
+        else
+            paste_row = E.cy + 1;
+        
+        // Save undo state
+        char *line_data = malloc(E.clipboard.len + 1);
+        if (line_data)
+        {
+            memcpy(line_data, E.clipboard.text, E.clipboard.len);
+            line_data[E.clipboard.len] = '\0';
+            editorPushUndo(U_INSERT_LINE, paste_row, 0, line_data, E.clipboard.len);
+        }
+        
+        editorInsertRow(paste_row, E.clipboard.text, E.clipboard.len);
+        E.cy = paste_row;
+        E.cx = 0;
+        editorSetStatusMessage("Pasted at line %d", E.cy + 1);
+    }
+    else
+    {
+        // Paste at cursor position (character-based)
+        if (E.cy == E.numrows)
+            editorInsertRow(E.numrows, "", 0);
+        
+        for (int i = 0; i < E.clipboard.len; i++)
+        {
+            editorInsertChar(E.clipboard.text[i]);
+        }
+        editorSetStatusMessage("Pasted text");
+    }
+}
+
 /*** editor operations ***/
 
 void editorInsertChar(int c)
@@ -1501,6 +1628,9 @@ void editorProcessKeypress()
         }
         write(STDOUT_FILENO, "\x1b[2J", 4);
         write(STDOUT_FILENO, "\x1b[H", 3);
+        free(E.clipboard.text);
+        editorFreeUndoStack(&E.undo_stack);
+        editorFreeUndoStack(&E.redo_stack);
         exit(0);
         break;
 
@@ -1532,6 +1662,32 @@ void editorProcessKeypress()
 
     case CTRL_KEY('y'):
         editorRedo();
+        break;
+
+    case CTRL_KEY('c'):
+        editorCopy();
+        break;
+
+    case CTRL_KEY('x'):
+        editorCut();
+        break;
+
+    case CTRL_KEY('p'):
+        editorPaste();
+        break;
+        
+    case CTRL_KEY('t'):
+        // Debug: show clipboard contents
+        if (E.clipboard.text && E.clipboard.len > 0)
+        {
+            editorSetStatusMessage("Clipboard: '%.*s' (len=%d, is_line=%d)", 
+                E.clipboard.len > 30 ? 30 : E.clipboard.len, 
+                E.clipboard.text, E.clipboard.len, E.clipboard.is_line);
+        }
+        else
+        {
+            editorSetStatusMessage("Clipboard is empty");
+        }
         break;
 
     case BACKSPACE:
@@ -1600,6 +1756,9 @@ void initEditor()
     E.undo_stack = NULL;
     E.redo_stack = NULL;
     E.undo_count = 0;
+    E.clipboard.text = NULL;
+    E.clipboard.len = 0;
+    E.clipboard.is_line = 0;
 
     if (getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
@@ -1616,7 +1775,7 @@ int main(int argc, char *argv[])
     }
 
     editorSetStatusMessage(
-        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-Z = undo | Ctrl-Y = redo");
+        "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find | Ctrl-C/X/P = copy/cut/paste");
 
     while (1)
     {
