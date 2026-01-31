@@ -1052,10 +1052,10 @@ void editorDrawStatusBar(struct abuf *ab)
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
                        E.filename ? E.filename : "[No Name]", E.numrows,
                        E.dirty ? "(modified)" : "");
-    int rlen = snprintf(rstatus, sizeof(rstatus), "%s%s | %d/%d",
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%s%s | Ln %d, Col %d",
                         E.syntax ? E.syntax->filetype : "no ft",
                         E.show_line_numbers ? " [LN]" : "",
-                        E.cy + 1, E.numrows);
+                        E.cy + 1, E.rx + 1);
     if (len > E.screencols)
         len = E.screencols;
     abAppend(ab, status, len);
