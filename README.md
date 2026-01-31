@@ -15,6 +15,7 @@ C-code is a minimal text editor that operates entirely in raw terminal mode, off
 - **Smart deletion**: Backspace and Delete key support
 - **Undo/Redo**: Full undo/redo support with up to 1000 levels (Ctrl-Z/Ctrl-Y)
 - **Copy/Cut/Paste**: Line-based clipboard operations (Ctrl-C/Ctrl-X/Ctrl-P)
+- **Auto-Indentation**: Automatic indentation matching with brace-aware smart indent (Ctrl-I to toggle)
 
 ### File Management
 - **Open existing files**: Launch with `./code.exe filename`
@@ -95,6 +96,7 @@ gcc code.c -o code.exe -Wall -Wextra -pedantic -std=c99
 | **Ctrl-C** | Copy current line |
 | **Ctrl-X** | Cut current line |
 | **Ctrl-P** | Paste clipboard contents |
+| **Ctrl-I** | Toggle auto-indentation on/off |
 | **Arrow Keys** | Move cursor |
 | **Page Up/Down** | Scroll by page |
 | **Home** | Jump to start of line |
